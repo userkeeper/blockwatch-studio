@@ -12,10 +12,10 @@
 //! this crate but never the other way around.
 
 pub mod bip39;
+pub mod buffer;
 pub mod detect;
 
 // Future modules — stubbed in PRs to come:
-// pub mod buffer;
 // pub mod blur;
 
 /// Crate-level result type. Per-module errors flow up as `Error`.
