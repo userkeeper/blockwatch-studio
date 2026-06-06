@@ -124,10 +124,11 @@ impl<F> FrameBuffer<F> {
 
 use crate::detect::BBox;
 
-/// Default sticky lifetime — 30 frames @ 30 fps = 1 second. Tuned to
-/// cover the 10-frame OCR interval plus a safety margin for engines
-/// that occasionally miss a frame.
-pub const STICKY_LIFETIME_FRAMES: u64 = 30;
+/// Default sticky lifetime — 12 frames. At 10 fps this is 1.2 s, at
+/// 30 fps it's 0.4 s. Short enough that closing a window stops the
+/// blur within ~1 s; long enough that a single missed OCR pass doesn't
+/// flicker the blur off.
+pub const STICKY_LIFETIME_FRAMES: u64 = 12;
 
 /// Tracks every detected bbox + when it expires.
 ///

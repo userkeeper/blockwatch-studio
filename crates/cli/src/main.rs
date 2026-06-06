@@ -62,13 +62,31 @@ struct Args {
     /// Skip OCR when fewer than this fraction of 64×64 cells changed
     /// since the previous OCR pass. 0.0 disables the optimisation
     /// (always OCR), 1.0 effectively disables OCR after frame 0.
-    /// Default 0.02 = "skip if <2% of screen changed".
-    #[arg(long, default_value_t = 0.02)]
+    /// Default 0.005 = "skip only if <0.5% of screen changed" — set
+    /// low so closing a small window / dialog forces re-OCR and
+    /// stickies don't persist as a ghost blur after the element is gone.
+    #[arg(long, default_value_t = 0.005)]
     diff_skip_threshold: f32,
 
     /// Directory for the recorded PNG sequence.
     #[arg(long, default_value = "frames")]
     out_dir: PathBuf,
+
+    /// Live-preview mode. Opens a window mirroring the primary display
+    /// with every detected secret blurred in real time. Runs until the
+    /// window is closed (Esc or close button). Ignores --record and
+    /// --output. This is the Phase 2 deliverable — same pipeline that
+    /// will feed the virtual camera in Phase 3, just displayed in a
+    /// window for now.
+    #[arg(long, default_value_t = false)]
+    preview: bool,
+
+    /// Downscale the preview window to this width. The pipeline still
+    /// runs at native resolution; only the displayed copy is scaled,
+    /// because mirroring a 4K display into a 4K window crushes a lot
+    /// of laptops.
+    #[arg(long, default_value_t = 1280)]
+    preview_width: u32,
 
     /// Print every OCR'd line + its detection verdict.
     #[arg(short, long, default_value_t = false)]
@@ -83,7 +101,9 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    if args.record > 0 {
+    if args.preview {
+        run_preview(&args)
+    } else if args.record > 0 {
         run_record(&args)
     } else {
         run_single_shot(&args)
@@ -168,6 +188,11 @@ fn run_record(args: &Args) -> Result<()> {
     // skip the next OCR pass if the screen barely changed since.
     let mut last_ocr_hashes = CellHashes::new();
     let mut curr_hashes = CellHashes::new();
+    // Counter of consecutive frame-diff skips. Forces an OCR re-run
+    // after N=3 skips so stickies on a truly static screen get
+    // refreshed before they expire on STICKY_LIFETIME_FRAMES.
+    let mut consecutive_skips: u32 = 0;
+    const MAX_CONSECUTIVE_SKIPS: u32 = 3;
 
     let t_total = Instant::now();
     for i in 0..total_frames {
@@ -181,7 +206,16 @@ fn run_record(args: &Args) -> Result<()> {
         if i % args.ocr_every == 0 {
             // Frame-diff gate. On the very first OCR pass we skip the
             // comparison (no previous hashes yet) and always OCR.
+            // After MAX_CONSECUTIVE_SKIPS skips in a row, we force an
+            // OCR pass even if frame-diff says "static" — otherwise
+            // stickies on a pixel-static screen expire and the secret
+            // is unblurred.
             let should_ocr = if last_ocr_hashes.is_empty() {
+                true
+            } else if consecutive_skips >= MAX_CONSECUTIVE_SKIPS {
+                if args.verbose {
+                    println!("  [frame {i}] force OCR after {consecutive_skips} skips");
+                }
                 true
             } else {
                 let t_diff = Instant::now();
@@ -189,15 +223,18 @@ fn run_record(args: &Args) -> Result<()> {
                 let changed = curr_hashes.fraction_changed(&last_ocr_hashes);
                 if args.verbose && changed < args.diff_skip_threshold {
                     println!(
-                        "  [frame {i}] diff {:.2}% in {:?} → skip OCR",
+                        "  [frame {i}] diff {:.2}% in {:?} → skip OCR ({}/{})",
                         changed * 100.0,
-                        t_diff.elapsed()
+                        t_diff.elapsed(),
+                        consecutive_skips + 1,
+                        MAX_CONSECUTIVE_SKIPS
                     );
                 }
                 changed >= args.diff_skip_threshold
             };
 
             if should_ocr {
+                consecutive_skips = 0;
                 let t_ocr = Instant::now();
                 match ocr.recognise(&frame) {
                     Ok(res) => {
@@ -238,15 +275,16 @@ fn run_record(args: &Args) -> Result<()> {
                 }
             } else {
                 ocr_skipped += 1;
-                // Critical: if we skipped OCR because the screen is
-                // stable, the existing sticky hits are *still valid*
-                // (the secret hasn't moved). Refresh their expiry so
-                // STICKY_LIFETIME_FRAMES doesn't tick them out while
-                // the screen is just sitting there.
-                let active = sticky.active();
-                for bb in active {
-                    sticky.add(bb, frame_idx);
-                }
+                consecutive_skips += 1;
+                // We DO NOT extend sticky lifetimes on frame-diff skip.
+                // Doing so was the cause of the "ghost blur" bug —
+                // closing a small UI element produced <0.5% screen
+                // change, frame-diff skipped OCR, sticky was extended
+                // forever. Stickies now expire on their natural
+                // STICKY_LIFETIME_FRAMES schedule. If the screen is
+                // pixel-static, frame-diff will skip K cycles, sticky
+                // will expire, and the *next* substantial change will
+                // re-trigger OCR.
             }
         }
 
@@ -317,7 +355,97 @@ fn run_detectors(ocr: &OcrResult, verbose: bool) -> Vec<AnnotatedHit> {
             });
         }
     }
+
+    // Second pass: vertical stitch of hex-only rows. Wallet UIs (Phantom,
+    // MetaMask) routinely wrap a 64-hex address across 2-3 lines, so a
+    // single row never has enough hex chars to fire HEX_PRIV_RE. We
+    // walk rows top-to-bottom, find runs of "pure-hex" rows that are
+    // vertically adjacent, concatenate their hex content, and if the
+    // total length matches an address shape (40 / 64 hex chars, with
+    // optional `0x` prefix) we add every contributing row's bbox as
+    // a SeedPhrase-tagged hit (label reused to surface "secret blurred"
+    // — kind enum extension is a future cleanup).
+    let mut sorted_rows: Vec<(usize, BBox, String)> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (i, r.bbox(), r.text()))
+        .collect();
+    sorted_rows.sort_by_key(|t| t.1.y);
+
+    let mut i = 0;
+    while i < sorted_rows.len() {
+        if let Some(_) = row_as_hex_chunk(&sorted_rows[i].2) {
+            // Start of a candidate run. Greedily extend while the
+            // next row is also pure-hex AND vertically adjacent.
+            let mut run_end = i + 1;
+            let mut total_hex = row_as_hex_chunk(&sorted_rows[i].2).unwrap().len();
+            while run_end < sorted_rows.len() {
+                let prev = &sorted_rows[run_end - 1].1;
+                let curr = &sorted_rows[run_end].1;
+                let v_gap = curr.y as i32 - (prev.y as i32 + prev.h as i32);
+                // Allow up to 1× line-height of vertical gap.
+                let allowed_gap = prev.h.max(curr.h) as i32;
+                if v_gap > allowed_gap || v_gap < -(curr.h as i32) {
+                    break;
+                }
+                let Some(chunk) = row_as_hex_chunk(&sorted_rows[run_end].2) else {
+                    break;
+                };
+                total_hex += chunk.len();
+                run_end += 1;
+            }
+            // Run is [i, run_end). Check if total hex looks like an
+            // address: 40 (EVM), 64 (Sui/Aptos/priv key). We accept
+            // ±1 to absorb OCR drop-out at a chunk boundary.
+            let looks_like_address = matches!(total_hex, 39..=41 | 63..=65);
+            if looks_like_address && run_end - i >= 2 {
+                if verbose {
+                    println!(
+                        "  ⚠ vertical stitch [{}..{}): {} hex chars → secret",
+                        i, run_end, total_hex
+                    );
+                }
+                for r in &sorted_rows[i..run_end] {
+                    all.push(AnnotatedHit {
+                        kind: SecretKind::HexPrivateKey,
+                        bbox: r.1,
+                    });
+                }
+            }
+            i = run_end;
+        } else {
+            i += 1;
+        }
+    }
+
     all
+}
+
+/// If `text` is composed only of hex characters (plus an optional
+/// `0x` prefix and ignoring whitespace), return the concatenated hex
+/// string. Otherwise return `None`. Used by the vertical-stitch
+/// pass to identify rows that *might* be part of a wrapped address.
+fn row_as_hex_chunk(text: &str) -> Option<String> {
+    // Drop the `0x` if present (only at the very start).
+    let t = text.trim();
+    let body = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
+    let mut out = String::new();
+    for c in body.chars() {
+        if c.is_ascii_whitespace() {
+            continue;
+        }
+        if c.is_ascii_hexdigit() {
+            out.push(c);
+        } else {
+            return None;
+        }
+    }
+    // Need at least 8 hex chars to bother — otherwise it's just "ff" type tokens.
+    if out.len() >= 8 {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 fn merge_rows(lines: &[OcrLine]) -> Vec<MergedRow> {
@@ -500,4 +628,177 @@ fn kind_label(kind: SecretKind) -> &'static str {
 
 fn embedded_font() -> Option<FontRef<'static>> {
     None
+}
+
+// ─── Live preview (Phase 2) ─────────────────────────────────────────
+
+/// Open a window mirroring the primary display, run the capture + OCR
+/// + blur pipeline at the requested fps, push each blurred frame to
+/// the window. Runs until the window is closed.
+///
+/// Architecture mirrors `run_record` 1:1 — the only difference is
+/// where the output frame goes (window pixel buffer vs PNG file).
+/// This makes it the cleanest possible Phase 3 swap-target for the
+/// virtual-camera writer: replace one function call.
+fn run_preview(args: &Args) -> Result<()> {
+    use minifb::{Key, Window, WindowOptions};
+
+    println!(
+        "BlockWatch Studio — Phase 2 preview @ {} fps, OCR every {} frame(s). Esc / close to exit.",
+        args.fps, args.ocr_every
+    );
+
+    let mut cap = default_capturer().context("init capturer")?;
+    let mut ocr = default_backend().context("init OCR backend")?;
+
+    // Grab one frame to learn the display resolution.
+    let probe = cap.grab().context("probe frame")?;
+    let src_w = probe.width;
+    let src_h = probe.height;
+    let dst_w = args.preview_width.min(src_w);
+    let dst_h = (src_h as f32 * (dst_w as f32 / src_w as f32)) as u32;
+
+    let mut window = Window::new(
+        "BlockWatch Shield Studio — live preview",
+        dst_w as usize,
+        dst_h as usize,
+        WindowOptions {
+            resize: false,
+            ..WindowOptions::default()
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("minifb window: {e}"))?;
+    window.set_target_fps(args.fps as usize);
+
+    let mut sticky = StickyHits::default();
+    let mut frame_idx: u64 = 0;
+    let mut last_ocr_hashes = CellHashes::new();
+    let mut curr_hashes = CellHashes::new();
+    let mut consecutive_skips: u32 = 0;
+    const MAX_CONSECUTIVE_SKIPS_PREVIEW: u32 = 3;
+    // Scratch buffer for the down-scaled ARGB output. Allocated once.
+    let mut pixel_buf: Vec<u32> = vec![0u32; (dst_w * dst_h) as usize];
+
+    let t_start = Instant::now();
+    let mut frames_drawn: u64 = 0;
+    // The probe frame is "frame 0", reuse it.
+    let mut frame = probe;
+
+    loop {
+        if !window.is_open() || window.is_key_down(Key::Escape) {
+            break;
+        }
+
+        // 1. Detect (rate-limited + frame-diff gated).
+        if frame_idx % args.ocr_every as u64 == 0 {
+            let should_ocr = if last_ocr_hashes.is_empty() {
+                true
+            } else if consecutive_skips >= MAX_CONSECUTIVE_SKIPS_PREVIEW {
+                true
+            } else {
+                curr_hashes.recompute(&frame.bgra, frame.width, frame.height);
+                curr_hashes.fraction_changed(&last_ocr_hashes) >= args.diff_skip_threshold
+            };
+            if should_ocr {
+                consecutive_skips = 0;
+                if let Ok(res) = ocr.recognise(&frame) {
+                    let hits = run_detectors(&res, false);
+                    for h in &hits {
+                        sticky.add(h.bbox, frame_idx);
+                    }
+                    let qrs = scan_qrs_bgra(&frame.bgra, frame.width, frame.height);
+                    for q in &qrs {
+                        if is_sensitive(q.kind) {
+                            sticky.add(q.bbox, frame_idx);
+                        }
+                    }
+                    last_ocr_hashes.recompute(&frame.bgra, frame.width, frame.height);
+                }
+            } else {
+                consecutive_skips += 1;
+            }
+            // (No extend-on-skip — see comment in run_record.)
+        }
+        sticky.prune(frame_idx);
+
+        // 2. Blur the captured frame in-place (clone first since we
+        // need the raw BGRA for hashing on the next iteration).
+        let mut img = frame_to_rgba_image(&frame)?;
+        for bb in sticky.active() {
+            blur_bbox_inplace(&mut img, bb);
+        }
+
+        // 3. Downscale to the preview window size + pack as 0xAARRGGBB
+        // u32 pixels (minifb's expected format).
+        downscale_into_argb(&img, dst_w, dst_h, &mut pixel_buf);
+        window
+            .update_with_buffer(&pixel_buf, dst_w as usize, dst_h as usize)
+            .map_err(|e| anyhow::anyhow!("window update: {e}"))?;
+        frames_drawn += 1;
+        frame_idx += 1;
+
+        // 4. Grab the NEXT frame for the next iteration. Doing this
+        // last means the work above overlaps with whatever DDA needs
+        // to do internally for the next acquisition.
+        frame = match cap.grab() {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("capture error: {e} (exiting)");
+                break;
+            }
+        };
+    }
+
+    let elapsed = t_start.elapsed();
+    let fps_avg = frames_drawn as f64 / elapsed.as_secs_f64();
+    println!(
+        "Preview closed. {} frames in {:?} ({:.1} fps).",
+        frames_drawn, elapsed, fps_avg
+    );
+    Ok(())
+}
+
+/// Blur one bbox inside `img` in place. Mirrors the padding rules from
+/// `write_blurred_frame` so preview and record-mode look identical.
+fn blur_bbox_inplace(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, bb: BBox) {
+    let x = bb.x.min(img.width().saturating_sub(1));
+    let y = bb.y.min(img.height().saturating_sub(1));
+    let w = bb.w.min(img.width().saturating_sub(x)).max(1);
+    let h = bb.h.min(img.height().saturating_sub(y)).max(1);
+    const PAD_X: u32 = 24;
+    const PAD_Y: u32 = 16;
+    let px = x.saturating_sub(PAD_X);
+    let py = y.saturating_sub(PAD_Y);
+    let pw = (w + 2 * PAD_X).min(img.width() - px);
+    let ph = (h + 2 * PAD_Y).min(img.height() - py);
+    let sub = imageops::crop(img, px, py, pw, ph).to_image();
+    let blurred = imageops::blur(&sub, 25.0);
+    imageops::replace(img, &blurred, px as i64, py as i64);
+}
+
+/// Nearest-neighbour downscale of an RGBA image into a flat u32 buffer
+/// (one u32 per pixel, packed as 0x00RRGGBB; minifb ignores the alpha
+/// byte). Fast enough at 1080p → 1280-wide preview: ~3 ms.
+fn downscale_into_argb(
+    src: &ImageBuffer<Rgba<u8>, Vec<u8>>,
+    dst_w: u32,
+    dst_h: u32,
+    dst: &mut [u32],
+) {
+    debug_assert_eq!(dst.len(), (dst_w * dst_h) as usize);
+    let sw = src.width();
+    let sh = src.height();
+    for dy in 0..dst_h {
+        let sy = dy * sh / dst_h;
+        let src_row_start = (sy * sw * 4) as usize;
+        let dst_row_start = (dy * dst_w) as usize;
+        for dx in 0..dst_w {
+            let sx = dx * sw / dst_w;
+            let i = src_row_start + (sx * 4) as usize;
+            let r = src.as_raw()[i] as u32;
+            let g = src.as_raw()[i + 1] as u32;
+            let b = src.as_raw()[i + 2] as u32;
+            dst[dst_row_start + dx as usize] = (r << 16) | (g << 8) | b;
+        }
+    }
 }

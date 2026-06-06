@@ -23,5 +23,11 @@ image = { workspace = true }
 imageproc = { workspace = true }
 ab_glyph = { workspace = true }
 
+# Live preview window — pure-Rust framebuffer + window, no DirectX /
+# OpenGL on the user's end. We feed it ARGB u32 pixels at the target
+# fps; minifb hands them to the OS window system (Win32 / Cocoa / X11).
+# Picked over winit+softbuffer because the API is one call.
+minifb = "0.27"
+
 [lints]
 workspace = true

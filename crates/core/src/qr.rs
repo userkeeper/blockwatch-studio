@@ -123,6 +123,13 @@ fn bbox_from_corners(corners: &[rqrr::Point; 4], width: u32, height: u32) -> BBo
 
 static EVM_ADDR: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^0x[a-fA-F0-9]{40}$").expect("regex"));
+/// Sui and Aptos both use 32-byte addresses serialised as `0x` + 64
+/// hex chars. Distinguishing the two from the payload alone is not
+/// possible (and not needed — they're both sensitive). Move/Walrus
+/// object IDs use the same encoding; if a streamer's QR holds one of
+/// those we'd rather over-blur than leak.
+static SUI_APTOS_ADDR: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^0x[a-fA-F0-9]{64}$").expect("regex"));
 static TON_ADDR: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^(?:EQ|UQ|Ef|Uf|kQ|kf|0Q|0f)[A-Za-z0-9_\-]{46}$").expect("regex"));
 static SOL_ADDR: Lazy<Regex> =
@@ -148,6 +155,7 @@ static SEED_PHRASE_SHAPE: Lazy<Regex> = Lazy::new(|| {
 fn classify(s: &str) -> QrKind {
     let trimmed = s.trim();
     if EVM_ADDR.is_match(trimmed)
+        || SUI_APTOS_ADDR.is_match(trimmed)
         || TON_ADDR.is_match(trimmed)
         || TRON_ADDR.is_match(trimmed)
         || BTC_ADDR.is_match(trimmed)
@@ -190,6 +198,25 @@ mod tests {
         let k = classify("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         assert_eq!(k, QrKind::Address);
         assert!(is_sensitive(k));
+    }
+
+    #[test]
+    fn classify_sui_address() {
+        // Real Sui address from a fresh wallet (32 bytes / 64 hex).
+        let k = classify(
+            "0x817148b27231e75fa24be2a734029ca6bbbc825117e4797695aac46e904ad526",
+        );
+        assert_eq!(k, QrKind::Address);
+        assert!(is_sensitive(k));
+    }
+
+    #[test]
+    fn classify_aptos_address() {
+        // Same shape as Sui — 0x + 64 hex.
+        let k = classify(
+            "0xa1b2c3d4e5f6789012345678901234567890abcdef0123456789abcdef012345",
+        );
+        assert_eq!(k, QrKind::Address);
     }
 
     #[test]
