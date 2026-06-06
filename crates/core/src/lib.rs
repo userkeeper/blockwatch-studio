@@ -14,6 +14,7 @@
 pub mod bip39;
 pub mod buffer;
 pub mod detect;
+pub mod frame_diff;
 
 // Future modules — stubbed in PRs to come:
 // pub mod blur;

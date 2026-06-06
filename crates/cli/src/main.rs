@@ -34,6 +34,7 @@ use ab_glyph::{FontRef, PxScale};
 use bw_capture::{default_capturer, Frame};
 use bw_core::buffer::StickyHits;
 use bw_core::detect::{scan, BBox, SecretKind};
+use bw_core::frame_diff::CellHashes;
 use bw_ocr::{default_backend, OcrLine, OcrResult};
 
 #[derive(Parser, Debug)]
@@ -56,6 +57,13 @@ struct Args {
     /// responsive, higher = less CPU. 1 means OCR every frame.
     #[arg(long, default_value_t = 3)]
     ocr_every: u32,
+
+    /// Skip OCR when fewer than this fraction of 64×64 cells changed
+    /// since the previous OCR pass. 0.0 disables the optimisation
+    /// (always OCR), 1.0 effectively disables OCR after frame 0.
+    /// Default 0.02 = "skip if <2% of screen changed".
+    #[arg(long, default_value_t = 0.02)]
+    diff_skip_threshold: f32,
 
     /// Directory for the recorded PNG sequence.
     #[arg(long, default_value = "frames")]
@@ -133,7 +141,13 @@ fn run_record(args: &Args) -> Result<()> {
     let mut sticky = StickyHits::default();
     let mut frame_idx: u64 = 0;
     let mut ocr_count = 0u32;
+    let mut ocr_skipped = 0u32;
     let mut total_hits = 0u32;
+
+    // Frame-diff state: we hash the frame on which we last ran OCR, and
+    // skip the next OCR pass if the screen barely changed since.
+    let mut last_ocr_hashes = CellHashes::new();
+    let mut curr_hashes = CellHashes::new();
 
     let t_total = Instant::now();
     for i in 0..total_frames {
@@ -142,28 +156,62 @@ fn run_record(args: &Args) -> Result<()> {
         // 1. Capture.
         let frame = cap.grab().context("grab frame in record loop")?;
 
-        // 2. Detect — but only every Nth frame.
+        // 2. Detect — but only every Nth frame AND only if the screen
+        // actually changed enough to be worth re-OCRing.
         if i % args.ocr_every == 0 {
-            let t_ocr = Instant::now();
-            match ocr.recognise(&frame) {
-                Ok(res) => {
-                    ocr_count += 1;
-                    let hits = run_detectors(&res, false);
-                    for h in &hits {
-                        sticky.add(h.bbox, frame_idx);
-                    }
-                    if args.verbose {
-                        println!(
-                            "  [frame {i}] OCR {:?} → {} hit(s) (sticky now {})",
-                            t_ocr.elapsed(),
-                            hits.len(),
-                            sticky.len()
-                        );
-                    }
-                    total_hits += hits.len() as u32;
+            // Frame-diff gate. On the very first OCR pass we skip the
+            // comparison (no previous hashes yet) and always OCR.
+            let should_ocr = if last_ocr_hashes.is_empty() {
+                true
+            } else {
+                let t_diff = Instant::now();
+                curr_hashes.recompute(&frame.bgra, frame.width, frame.height);
+                let changed = curr_hashes.fraction_changed(&last_ocr_hashes);
+                if args.verbose && changed < args.diff_skip_threshold {
+                    println!(
+                        "  [frame {i}] diff {:.2}% in {:?} → skip OCR",
+                        changed * 100.0,
+                        t_diff.elapsed()
+                    );
                 }
-                Err(e) => {
-                    eprintln!("  [frame {i}] OCR error: {e}");
+                changed >= args.diff_skip_threshold
+            };
+
+            if should_ocr {
+                let t_ocr = Instant::now();
+                match ocr.recognise(&frame) {
+                    Ok(res) => {
+                        ocr_count += 1;
+                        let hits = run_detectors(&res, false);
+                        for h in &hits {
+                            sticky.add(h.bbox, frame_idx);
+                        }
+                        // Snapshot the hashes we just OCR'd against.
+                        last_ocr_hashes.recompute(&frame.bgra, frame.width, frame.height);
+                        if args.verbose {
+                            println!(
+                                "  [frame {i}] OCR {:?} → {} hit(s) (sticky now {})",
+                                t_ocr.elapsed(),
+                                hits.len(),
+                                sticky.len()
+                            );
+                        }
+                        total_hits += hits.len() as u32;
+                    }
+                    Err(e) => {
+                        eprintln!("  [frame {i}] OCR error: {e}");
+                    }
+                }
+            } else {
+                ocr_skipped += 1;
+                // Critical: if we skipped OCR because the screen is
+                // stable, the existing sticky hits are *still valid*
+                // (the secret hasn't moved). Refresh their expiry so
+                // STICKY_LIFETIME_FRAMES doesn't tick them out while
+                // the screen is just sitting there.
+                let active = sticky.active();
+                for bb in active {
+                    sticky.add(bb, frame_idx);
                 }
             }
         }
@@ -186,10 +234,11 @@ fn run_record(args: &Args) -> Result<()> {
     }
 
     println!(
-        "Done. {} frames in {:?} ({} OCR runs, {} total hits accumulated).",
+        "Done. {} frames in {:?} ({} OCR runs, {} OCR skipped via frame-diff, {} total hits accumulated).",
         total_frames,
         t_total.elapsed(),
         ocr_count,
+        ocr_skipped,
         total_hits
     );
     println!("Frames in: {}", args.out_dir.display());
