@@ -35,6 +35,7 @@ use bw_capture::{default_capturer, Frame};
 use bw_core::buffer::StickyHits;
 use bw_core::detect::{scan, BBox, SecretKind};
 use bw_core::frame_diff::CellHashes;
+use bw_core::qr::{is_sensitive, scan_qrs_bgra};
 use bw_ocr::{default_backend, OcrLine, OcrResult};
 
 #[derive(Parser, Debug)]
@@ -114,8 +115,27 @@ fn run_single_shot(args: &Args) -> Result<()> {
         t_ocr.elapsed()
     );
 
-    let hits = run_detectors(&ocr_result, args.verbose);
-    println!("  {} sensitive region(s) detected", hits.len());
+    let mut hits = run_detectors(&ocr_result, args.verbose);
+
+    // QR scan.
+    let t_qr = Instant::now();
+    let qrs = scan_qrs_bgra(&frame.bgra, frame.width, frame.height);
+    let mut qr_hits = 0;
+    for q in &qrs {
+        if is_sensitive(q.kind) {
+            hits.push(AnnotatedHit {
+                kind: SecretKind::SeedPhrase, // reusing label for now
+                bbox: q.bbox,
+            });
+            qr_hits += 1;
+        }
+    }
+    println!(
+        "  {} text region(s) + {} sensitive QR(s) in {:?}",
+        hits.len() - qr_hits,
+        qr_hits,
+        t_qr.elapsed()
+    );
 
     println!("Writing annotated PNG to {} …", args.output.display());
     write_annotated_png(&frame, &hits, &args.output).context("write PNG")?;
@@ -186,17 +206,31 @@ fn run_record(args: &Args) -> Result<()> {
                         for h in &hits {
                             sticky.add(h.bbox, frame_idx);
                         }
+                        // QR scan piggy-backs on the same "we just
+                        // re-analysed this frame" budget. Same
+                        // sticky set, so blur path is identical.
+                        let t_qr = Instant::now();
+                        let qrs = scan_qrs_bgra(&frame.bgra, frame.width, frame.height);
+                        let mut qr_sensitive = 0u32;
+                        for q in &qrs {
+                            if is_sensitive(q.kind) {
+                                sticky.add(q.bbox, frame_idx);
+                                qr_sensitive += 1;
+                            }
+                        }
                         // Snapshot the hashes we just OCR'd against.
                         last_ocr_hashes.recompute(&frame.bgra, frame.width, frame.height);
                         if args.verbose {
                             println!(
-                                "  [frame {i}] OCR {:?} → {} hit(s) (sticky now {})",
+                                "  [frame {i}] OCR {:?} → {} hit(s), QR {:?} → {} sensitive (sticky now {})",
                                 t_ocr.elapsed(),
                                 hits.len(),
+                                t_qr.elapsed(),
+                                qr_sensitive,
                                 sticky.len()
                             );
                         }
-                        total_hits += hits.len() as u32;
+                        total_hits += hits.len() as u32 + qr_sensitive;
                     }
                     Err(e) => {
                         eprintln!("  [frame {i}] OCR error: {e}");

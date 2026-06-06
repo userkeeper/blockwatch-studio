@@ -25,8 +25,12 @@ use crate::detect::BBox;
 pub const CELL_SIZE: u32 = 64;
 
 /// FNV-1a 64 — public domain, no deps, fast on small buffers.
+/// Kept as a standalone helper so the test suite (and any future
+/// per-row hashing) can reuse it. The hot path in [`CellHashes::recompute`]
+/// inlines the same loop body to skip the function-call overhead.
 #[inline]
-fn fnv1a_64(bytes: &[u8]) -> u64 {
+#[must_use]
+pub fn fnv1a_64(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in bytes {
         h ^= u64::from(b);
