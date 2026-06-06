@@ -62,10 +62,10 @@ struct Args {
     /// Skip OCR when fewer than this fraction of 64×64 cells changed
     /// since the previous OCR pass. 0.0 disables the optimisation
     /// (always OCR), 1.0 effectively disables OCR after frame 0.
-    /// Default 0.005 = "skip only if <0.5% of screen changed" — set
-    /// low so closing a small window / dialog forces re-OCR and
-    /// stickies don't persist as a ghost blur after the element is gone.
-    #[arg(long, default_value_t = 0.005)]
+    /// Default 0.0 — be safe, always OCR every Nth frame (controlled
+    /// by --ocr-every). User can re-enable the optimisation if CPU
+    /// is a concern.
+    #[arg(long, default_value_t = 0.0)]
     diff_skip_threshold: f32,
 
     /// Directory for the recorded PNG sequence.
@@ -239,7 +239,7 @@ fn run_record(args: &Args) -> Result<()> {
                 match ocr.recognise(&frame) {
                     Ok(res) => {
                         ocr_count += 1;
-                        let hits = run_detectors(&res, false);
+                        let hits = run_detectors(&res, args.verbose);
                         for h in &hits {
                             sticky.add(h.bbox, frame_idx);
                         }
@@ -337,7 +337,34 @@ fn run_detectors(ocr: &OcrResult, verbose: bool) -> Vec<AnnotatedHit> {
         let text = row.text();
         let normalised = normalise_for_detect(&text);
         let bbox = row.bbox();
-        let hits = scan(&normalised, bbox);
+
+        // Run scan twice: once on the normalised text (good for BIP-39
+        // and other patterns where OCR routinely misreads l→1, o→0),
+        // once on the raw text (preserves case + digits for API-key
+        // patterns that REQUIRE [0-9A-Z] — AWS, GitHub PAT, etc.).
+        // Normalise is destructive: if OCR correctly read `AKIA1OSF…`
+        // (real AWS key with digit 1), normalise turns it into
+        // `AKIAlOSF…` and AWS_KEY_RE no longer matches.
+        let mut hits = scan(&normalised, bbox);
+        if normalised != text {
+            for h in scan(&text, bbox) {
+                if !hits.contains(&h) {
+                    hits.push(h);
+                }
+            }
+        }
+        // Third pass: collapse whitespace and re-scan. Catches the
+        // case where OCR inserts a phantom space mid-token
+        // (`sk-abc def…` instead of `sk-abcdef…`), which breaks
+        // every API-key regex.
+        let collapsed: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+        if collapsed.len() >= 16 && collapsed != text {
+            for h in scan(&collapsed, bbox) {
+                if !hits.contains(&h) {
+                    hits.push(h);
+                }
+            }
+        }
         if verbose {
             if hits.is_empty() {
                 println!("  · {:?} — \"{}\"", bbox, text);
@@ -623,6 +650,14 @@ fn kind_label(kind: SecretKind) -> &'static str {
         SecretKind::Wif => "WIF KEY",
         SecretKind::ExtendedKey => "XPRIV/XPUB",
         SecretKind::SolanaKey => "SOL KEY",
+        SecretKind::AwsAccessKey => "AWS KEY",
+        SecretKind::GithubToken => "GITHUB TOKEN",
+        SecretKind::StripeKey => "STRIPE KEY",
+        SecretKind::LlmApiKey => "API KEY",
+        SecretKind::SlackToken => "SLACK TOKEN",
+        SecretKind::TwilioSid => "TWILIO SID",
+        SecretKind::JsonWebToken => "JWT",
+        SecretKind::HighEntropyToken => "TOKEN",
     }
 }
 
@@ -702,7 +737,7 @@ fn run_preview(args: &Args) -> Result<()> {
             if should_ocr {
                 consecutive_skips = 0;
                 if let Ok(res) = ocr.recognise(&frame) {
-                    let hits = run_detectors(&res, false);
+                    let hits = run_detectors(&res, args.verbose);
                     for h in &hits {
                         sticky.add(h.bbox, frame_idx);
                     }

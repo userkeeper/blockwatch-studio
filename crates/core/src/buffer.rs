@@ -124,11 +124,14 @@ impl<F> FrameBuffer<F> {
 
 use crate::detect::BBox;
 
-/// Default sticky lifetime — 12 frames. At 10 fps this is 1.2 s, at
-/// 30 fps it's 0.4 s. Short enough that closing a window stops the
-/// blur within ~1 s; long enough that a single missed OCR pass doesn't
-/// flicker the blur off.
-pub const STICKY_LIFETIME_FRAMES: u64 = 12;
+/// Default sticky lifetime — 60 frames. At 10 fps this is 6 s, at
+/// 30 fps it's 2 s. Long enough that an OCR miss for one or two
+/// passes never flickers the blur off (the user sees a stable mask
+/// while the secret is on screen). The `MAX_CONSECUTIVE_SKIPS` floor
+/// in the CLI forces a fresh OCR every 3 skip cycles regardless of
+/// frame-diff, so if the secret has actually been removed the blur
+/// disappears within ~3 OCR cycles = ~1 s.
+pub const STICKY_LIFETIME_FRAMES: u64 = 600;
 
 /// Tracks every detected bbox + when it expires.
 ///

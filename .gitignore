@@ -12,6 +12,16 @@ Cargo.lock
 .DS_Store
 Thumbs.db
 
+# CLI test output (frames + verbose logs may contain user screen content
+# including secrets) — never commit.
+/frames
+/frames/
+*.log
+log.txt
+preview.log
+demo.mp4
+*.png
+
 # Tauri build artefacts (added in Phase 3)
 src-tauri/target/
 src-tauri/WixTools/
