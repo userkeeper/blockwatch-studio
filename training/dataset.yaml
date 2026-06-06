@@ -1,0 +1,17 @@
+# YOLO dataset config — points the Ultralytics trainer at our images.
+# Edit `path` to point at the absolute location of the `dataset/`
+# directory if you train outside the repo.
+
+path: ../dataset
+train: images/train
+val: images/val
+
+# Class IDs — these MUST stay in the order declared in
+# `bw_vision::ObjectClass`. Reordering breaks the runtime mapping.
+names:
+  0: wallet_receive_popup
+  1: seed_phrase_reveal
+  2: private_key_reveal
+  3: env_file_editor
+  4: credential_terminal
+  5: portfolio_balance

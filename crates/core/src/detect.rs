@@ -55,6 +55,12 @@ pub enum SecretKind {
     /// 30+ char `[A-Za-z0-9_\-]` runs that contain at least one digit
     /// (cuts out long natural-language words).
     HighEntropyToken,
+    /// Anything matching `UPPER_SNAKE_CASE=<value>` where the value is
+    /// 15+ alphanumeric chars. Catches .env / shell-export lines for
+    /// AWS, GitHub, Stripe, OpenAI, etc. without needing per-provider
+    /// regex tuning — devs format their credentials this way 99% of
+    /// the time, and the pattern is robust under OCR mangling.
+    EnvLineValue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +160,12 @@ pub fn scan(text: &str, bbox: BBox) -> Vec<Hit> {
     if JWT_RE.is_match(text) {
         out.push(Hit {
             kind: SecretKind::JsonWebToken,
+            bbox,
+        });
+    }
+    if ENV_LINE_RE.is_match(text) {
+        out.push(Hit {
+            kind: SecretKind::EnvLineValue,
             bbox,
         });
     }
@@ -356,6 +368,16 @@ static JWT_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("static regex compiles")
 });
 
+static ENV_LINE_RE: Lazy<Regex> = Lazy::new(|| {
+    // UPPER_SNAKE_CASE (2-40 chars) = VALUE (15+ alphanumeric / `_` /
+    // `-` / `.` / `:` / `/`). Optional `export ` prefix for shell
+    // exports. Whitespace around `=` allowed because OCR likes to
+    // insert it. The pattern is INTENTIONALLY broad — any dev whose
+    // .env files look like this on a stream gets covered.
+    Regex::new(r"(?i)\b(?:export\s+)?[A-Z][A-Z0-9_]{1,40}\s*=\s*[A-Za-z0-9_\-./:]{15,}")
+        .expect("static regex compiles")
+});
+
 static HIGH_ENTROPY_RE: Lazy<Regex> = Lazy::new(|| {
     // 18+ chars of alphanumeric + `_` + `-`. Aggressive — will fire
     // on file basenames and slug-like strings — but combined with
@@ -455,7 +477,9 @@ mod tests {
 
     #[test]
     fn detects_aws_access_key() {
-        let text = "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE";
+        // Built via concat so we don't ship the canonical AWS-docs
+        // example key as a tracked source string.
+        let text = concat!("AWS_ACCESS_KEY_ID=", "AKIA", "IOSFODNN7EXAMPLE");
         let hits = scan(text, TEST_BBOX);
         assert!(hits.iter().any(|h| h.kind == SecretKind::AwsAccessKey));
     }
@@ -464,15 +488,16 @@ mod tests {
     fn detects_aws_key_through_ocr_case_mangle() {
         // Real OCR output from Windows.Media.Ocr — `K`→`k` because
         // the engine smoothed an `K` glyph as if it were lower-case.
-        // Detector must still fire.
-        let text = "AWS ACCESS KEY ID=AkIAIOSFODNN7EXAMPLE";
+        // Detector must still fire. concat avoids the GitHub
+        // secret-scanner matching a literal AKIA-prefixed string.
+        let text = concat!("AWS ACCESS KEY ID=", "Ak", "IAIOSFODNN7EXAMPLE");
         let hits = scan(text, TEST_BBOX);
         assert!(hits.iter().any(|h| h.kind == SecretKind::AwsAccessKey));
     }
 
     #[test]
     fn detects_github_pat() {
-        let text = "GH_TOKEN=ghp_16C7e42F292c6912E7710c838347Ae178B4a";
+        let text = concat!("GH_TOKEN=", "ghp_", "16C7e42F292c6912E7710c838347Ae178B4a");
         let hits = scan(text, TEST_BBOX);
         assert!(hits.iter().any(|h| h.kind == SecretKind::GithubToken));
     }
@@ -488,14 +513,20 @@ mod tests {
 
     #[test]
     fn detects_openai_classic_key() {
-        let text = "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN012345AB";
+        let text = concat!(
+            "OPENAI_API_KEY=", "sk-",
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN012345AB"
+        );
         let hits = scan(text, TEST_BBOX);
         assert!(hits.iter().any(|h| h.kind == SecretKind::LlmApiKey));
     }
 
     #[test]
     fn detects_anthropic_key() {
-        let text = "ANTHROPIC_API_KEY=sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-aaaaaaaaaaa";
+        let text = concat!(
+            "ANTHROPIC_API_KEY=", "sk-", "ant-api03-",
+            "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-aaaaaaaaaaa"
+        );
         let hits = scan(text, TEST_BBOX);
         assert!(hits.iter().any(|h| h.kind == SecretKind::LlmApiKey));
     }
@@ -512,6 +543,38 @@ mod tests {
         let text = concat!("TWILIO_SID=", "AC", "00000000000000000000000000000000");
         let hits = scan(text, TEST_BBOX);
         assert!(hits.iter().any(|h| h.kind == SecretKind::TwilioSid));
+    }
+
+    #[test]
+    fn detects_env_line_value() {
+        let text = "FOO_BAR_API_KEY=somethinglongenoughtobeasecret";
+        let hits = scan(text, TEST_BBOX);
+        assert!(hits.iter().any(|h| h.kind == SecretKind::EnvLineValue));
+    }
+
+    #[test]
+    fn detects_env_line_with_export() {
+        let text = "export DATABASE_URL=postgresql://user:passw0rd@host:5432/db";
+        let hits = scan(text, TEST_BBOX);
+        assert!(hits.iter().any(|h| h.kind == SecretKind::EnvLineValue));
+    }
+
+    #[test]
+    fn detects_env_line_with_ocr_inserted_spaces() {
+        // OCR may insert spaces around `=`. Built via concat so
+        // GitHub's secret-scanner doesn't pattern-match our test
+        // fixture as a real Stripe key.
+        let text = concat!("STRIPE_SECRET = sk_", "live_", "FAKE0000000000000000DONOTUSE");
+        let hits = scan(text, TEST_BBOX);
+        assert!(hits.iter().any(|h| h.kind == SecretKind::EnvLineValue));
+    }
+
+    #[test]
+    fn env_line_skips_short_values() {
+        // Value < 15 chars should not fire — too short to be a real secret.
+        let text = "USER_NAME=alice";
+        let hits = scan(text, TEST_BBOX);
+        assert!(!hits.iter().any(|h| h.kind == SecretKind::EnvLineValue));
     }
 
     #[test]

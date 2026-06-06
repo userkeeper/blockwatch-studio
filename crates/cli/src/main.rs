@@ -91,6 +91,16 @@ struct Args {
     /// Print every OCR'd line + its detection verdict.
     #[arg(short, long, default_value_t = false)]
     verbose: bool,
+
+    /// Dataset-collection mode. Opens a live preview of the primary
+    /// display; press `C` to save the current frame as a PNG into
+    /// --out-dir with a class-prefixed filename. Used to build the
+    /// training set for the YOLOv8 vision model (see ADR-002, Phase 1).
+    ///
+    /// Example:
+    ///     --collect wallet_receive_popup --out-dir dataset/images/train/
+    #[arg(long)]
+    collect: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -101,7 +111,9 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    if args.preview {
+    if let Some(ref class_label) = args.collect {
+        run_collect(&args, class_label)
+    } else if args.preview {
         run_preview(&args)
     } else if args.record > 0 {
         run_record(&args)
@@ -658,11 +670,99 @@ fn kind_label(kind: SecretKind) -> &'static str {
         SecretKind::TwilioSid => "TWILIO SID",
         SecretKind::JsonWebToken => "JWT",
         SecretKind::HighEntropyToken => "TOKEN",
+        SecretKind::EnvLineValue => "ENV",
     }
 }
 
 fn embedded_font() -> Option<FontRef<'static>> {
     None
+}
+
+// ─── Dataset collector (Phase 1 of ML migration) ────────────────────
+
+/// Live capture loop with manual frame saving. Used to assemble the
+/// training set for the YOLOv8 popup detector — open whatever window
+/// represents the target class (a Phantom receive popup, a Notepad
+/// open on `.env`, etc.), press `C`, repeat. Files are saved as
+/// `<class>_<unix-millis>.png` so they sort by capture time.
+fn run_collect(args: &Args, class_label: &str) -> Result<()> {
+    use minifb::{Key, Window, WindowOptions};
+
+    println!(
+        "BlockWatch Studio — dataset collector\n  class: {}\n  out:   {}\nPress C to save current frame, Esc to exit.",
+        class_label,
+        args.out_dir.display(),
+    );
+    std::fs::create_dir_all(&args.out_dir).context("create out_dir")?;
+
+    let mut cap = default_capturer().context("init capturer")?;
+    let probe = cap.grab().context("probe frame")?;
+    let src_w = probe.width;
+    let src_h = probe.height;
+    let dst_w = args.preview_width.min(src_w);
+    let dst_h = (src_h as f32 * (dst_w as f32 / src_w as f32)) as u32;
+
+    let mut window = Window::new(
+        &format!("BlockWatch Studio — collect: {}", class_label),
+        dst_w as usize,
+        dst_h as usize,
+        WindowOptions {
+            resize: false,
+            ..WindowOptions::default()
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("minifb window: {e}"))?;
+    window.set_target_fps(args.fps as usize);
+
+    let mut pixel_buf: Vec<u32> = vec![0u32; (dst_w * dst_h) as usize];
+    let mut frame = probe;
+    let mut saved = 0u32;
+    // Debounce so a single C-keypress saves exactly one frame instead
+    // of spamming N consecutive frames while the key is held.
+    let mut c_was_down = false;
+
+    loop {
+        if !window.is_open() || window.is_key_down(Key::Escape) {
+            break;
+        }
+
+        // Save on C press (edge-triggered).
+        let c_is_down = window.is_key_down(Key::C);
+        if c_is_down && !c_was_down {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let filename = format!("{}_{}.png", class_label, ts);
+            let path = args.out_dir.join(&filename);
+
+            let img = frame_to_rgba_image(&frame)?;
+            img.save(&path).context("save dataset PNG")?;
+            saved += 1;
+            println!("  ✓ saved [{}] {}", saved, filename);
+        }
+        c_was_down = c_is_down;
+
+        // Render the live preview UNALTERED — we deliberately don't
+        // run detection here; the point is to capture ground truth
+        // for labelling.
+        let img = frame_to_rgba_image(&frame)?;
+        downscale_into_argb(&img, dst_w, dst_h, &mut pixel_buf);
+        window
+            .update_with_buffer(&pixel_buf, dst_w as usize, dst_h as usize)
+            .map_err(|e| anyhow::anyhow!("window update: {e}"))?;
+
+        frame = match cap.grab() {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("capture error: {e} (exiting)");
+                break;
+            }
+        };
+    }
+
+    println!("Collector closed. {saved} frame(s) saved to {}", args.out_dir.display());
+    Ok(())
 }
 
 // ─── Live preview (Phase 2) ─────────────────────────────────────────

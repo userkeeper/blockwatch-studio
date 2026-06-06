@@ -22,6 +22,14 @@ preview.log
 demo.mp4
 *.png
 
+# Training dataset images may contain user screen content — never
+# commit. Only the directory structure (.gitkeep) is tracked.
+/dataset/images/
+/dataset/labels/
+/training/runs/
+*.pt
+*.onnx
+
 # Tauri build artefacts (added in Phase 3)
 src-tauri/target/
 src-tauri/WixTools/

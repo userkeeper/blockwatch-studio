@@ -1,0 +1,4 @@
+# This directory holds labelled training screenshots. Image files
+# (*.png, *.jpg) are git-ignored — they may contain real secrets
+# from the contributor's screen. Only the directory structure is
+# tracked.
