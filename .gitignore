@@ -1,0 +1,17 @@
+# Rust
+/target
+**/target
+Cargo.lock
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tauri build artefacts (added in Phase 3)
+src-tauri/target/
+src-tauri/WixTools/

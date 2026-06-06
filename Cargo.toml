@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/capture",
+    "crates/ocr",
+    "crates/virtualcam",
+    # "crates/app-tauri",   # enabled when Tauri scaffold lands in Phase 3
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Proprietary"
+authors = ["BlockWatch"]
+repository = "https://github.com/userkeeper/blockwatch-studio"
+
+[workspace.dependencies]
+# Shared logging + error handling so every crate uses the same stack.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "1"
+anyhow = "1"
+
+# Workspace lints — strict but pragmatic.
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Allowed for product code where readability beats theoretical purity.
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+
+[profile.release]
+# Single fat binary — startup latency matters more than file size for a
+# system-tray app the streamer launches once.
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
