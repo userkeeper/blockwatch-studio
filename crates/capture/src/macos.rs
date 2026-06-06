@@ -1,4 +1,4 @@
-//! macos backend for `bw-capture` — stub.
-//! Real implementation lands in the corresponding ROADMAP phase.
-
-#![allow(unused)]
+//! macOS screen capture — stub.
+//!
+//! Phase 4 of the ROADMAP wires this through ScreenCaptureKit. For now
+//! we expose a pla

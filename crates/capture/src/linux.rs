@@ -1,4 +1,4 @@
-//! linux backend for `bw-capture` — stub.
-//! Real implementation lands in the corresponding ROADMAP phase.
-
-#![allow(unused)]
+//! Linux screen capture — stub.
+//!
+//! Phase 5 of the ROADMAP wires this through PipeWire. For now we
+//! delegate to `xcap` w

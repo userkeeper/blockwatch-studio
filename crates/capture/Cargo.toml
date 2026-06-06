@@ -12,3 +12,11 @@ path = "src/lib.rs"
 bw-core = { path = "../core" }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+# xcap gives us one capture API across Win/macOS/Linux. The per-OS
+# modules in this crate are mostly thin wrappers that select the right
+# `xcap::Monitor` and translate its frame into our `Frame` type.
+xcap = { workspace = true }
+
+[lints]
+workspace = true

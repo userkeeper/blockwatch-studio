@@ -10,5 +10,23 @@ path = "src/lib.rs"
 
 [dependencies]
 bw-core = { path = "../core" }
+bw-capture = { path = "../capture" }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# We bind a small subset of the Windows Runtime: Media.Ocr for the
+# engine itself, Graphics.Imaging for SoftwareBitmap, Storage.Streams +
+# Foundation for the buffer / async glue. Feature flags here directly
+# drive how much of windows-rs ends up linked.
+windows = { version = "0.59", features = [
+    "Media_Ocr",
+    "Graphics_Imaging",
+    "Storage_Streams",
+    "Foundation",
+    "Foundation_Collections",
+    "Globalization",
+] }
+
+[lints]
+workspace = true

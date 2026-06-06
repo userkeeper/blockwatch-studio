@@ -5,6 +5,7 @@ members = [
     "crates/capture",
     "crates/ocr",
     "crates/virtualcam",
+    "crates/cli",
     # "crates/app-tauri",   # enabled when Tauri scaffold lands in Phase 3
 ]
 
@@ -21,6 +22,21 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "1"
 anyhow = "1"
+
+# Image processing — used by capture (frame buffer), cli (PNG output + draw),
+# blur (Phase 2 GPU path).
+image = { version = "0.25", default-features = false, features = ["png"] }
+imageproc = { version = "0.25", default-features = false }
+ab_glyph = "0.2"
+
+# Cross-platform screen capture. On Windows it backs onto the Desktop
+# Duplication API; on macOS it uses ScreenCaptureKit; on Linux it tries
+# Wayland/PipeWire then falls back to X11. Gives us identical APIs across
+# the three OSes so the per-OS modules stay thin.
+xcap = "0.2"
+
+# CLI argument parsing for the PoC binary.
+clap = { version = "4", features = ["derive"] }
 
 # Workspace lints — strict but pragmatic.
 [workspace.lints.clippy]

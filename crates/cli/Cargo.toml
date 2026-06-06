@@ -1,0 +1,27 @@
+[package]
+name = "bw-studio-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "bw-studio-cli"
+path = "src/main.rs"
+
+[dependencies]
+bw-core = { path = "../core" }
+bw-capture = { path = "../capture" }
+bw-ocr = { path = "../ocr" }
+
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+
+image = { workspace = true }
+imageproc = { workspace = true }
+ab_glyph = { workspace = true }
+
+[lints]
+workspace = true
