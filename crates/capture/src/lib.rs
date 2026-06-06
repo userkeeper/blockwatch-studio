@@ -62,6 +62,8 @@ pub mod macos;
 #[cfg(target_os = "linux")]
 pub mod linux;
 
+pub mod window_info;
+
 /// Construct the default capturer for the host OS.
 ///
 /// On Windows this is [`windows::DxgiCapturer`]; on macOS,

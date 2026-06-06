@@ -31,6 +31,7 @@ use imageproc::drawing::{draw_hollow_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
 use ab_glyph::{FontRef, PxScale};
 
+use bw_capture::window_info::{classify as classify_window, get_foreground_window};
 use bw_capture::{default_capturer, Frame};
 use bw_core::buffer::StickyHits;
 use bw_core::detect::{scan, BBox, SecretKind};
@@ -212,6 +213,21 @@ fn run_record(args: &Args) -> Result<()> {
 
         // 1. Capture.
         let frame = cap.grab().context("grab frame in record loop")?;
+
+        // 1b. Foreground-window check — informational. See run_preview
+        // for the same comment: we do NOT sticky the full window rect,
+        // OCR / QR detectors handle surgical sub-region blur.
+        if args.verbose {
+            if let Ok(Some(info)) = get_foreground_window() {
+                let verdict = classify_window(&info);
+                if verdict.is_sensitive() {
+                    println!(
+                        "  [frame {i}] foreground context: {:?} \"{}\"",
+                        verdict, info.title
+                    );
+                }
+            }
+        }
 
         // 2. Detect — but only every Nth frame AND only if the screen
         // actually changed enough to be worth re-OCRing.
@@ -822,6 +838,26 @@ fn run_preview(args: &Args) -> Result<()> {
     loop {
         if !window.is_open() || window.is_key_down(Key::Escape) {
             break;
+        }
+
+        // 0. Foreground-window check — informational only.
+        // We DO NOT auto-sticky the whole window rect — that produces
+        // an enormous blur halo and ruins the UX. The classifier is
+        // a CONTEXT hint for verbose logging today; in Phase 1 of the
+        // vision migration it becomes one of the input features fed
+        // to the YOLOv8 detector to bias confidence inside known
+        // sensitive windows. Surgical sub-region blur (QR + text)
+        // continues to come from the OCR/QR detectors below.
+        if args.verbose {
+            if let Ok(Some(info)) = get_foreground_window() {
+                let verdict = classify_window(&info);
+                if verdict.is_sensitive() {
+                    println!(
+                        "  [frame {frame_idx}] foreground context: {:?} \"{}\"",
+                        verdict, info.title
+                    );
+                }
+            }
         }
 
         // 1. Detect (rate-limited + frame-diff gated).

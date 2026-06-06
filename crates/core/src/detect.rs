@@ -379,15 +379,16 @@ static ENV_LINE_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 static HIGH_ENTROPY_RE: Lazy<Regex> = Lazy::new(|| {
-    // 18+ chars of alphanumeric + `_` + `-`. Aggressive — will fire
-    // on file basenames and slug-like strings — but combined with
-    // the `looks_like_high_entropy` filter (digit AND letter AND
-    // ≥8 distinct chars) it stays mostly off natural text.
+    // 30+ chars of alphanumeric + `_` + `-`. Combined with the
+    // `looks_like_high_entropy` filter (digit AND letter AND ≥8
+    // distinct chars) this stays off natural text and file names
+    // while still catching real API keys and address strings.
     //
-    // We lowered from 30→18 because OCR routinely fragments API
-    // keys mid-string. A 50-char key may come back as two 25-char
-    // halves; neither would match 30+ but each matches 18+.
-    Regex::new(r"[A-Za-z0-9_\-]{18,}").expect("static regex compiles")
+    // Earlier we tried 18 chars — produced massive over-blur on
+    // ordinary URL paths and slugs and was a UX disaster. Specific
+    // patterns (AWS / GH PAT / Stripe / ENV_LINE / etc.) catch the
+    // typical cases; HighEntropy is the LAST-resort net.
+    Regex::new(r"[A-Za-z0-9_\-]{30,}").expect("static regex compiles")
 });
 
 // ─── Tests ──────────────────────────────────────────────────────────────

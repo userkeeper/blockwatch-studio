@@ -131,7 +131,7 @@ use crate::detect::BBox;
 /// in the CLI forces a fresh OCR every 3 skip cycles regardless of
 /// frame-diff, so if the secret has actually been removed the blur
 /// disappears within ~3 OCR cycles = ~1 s.
-pub const STICKY_LIFETIME_FRAMES: u64 = 600;
+pub const STICKY_LIFETIME_FRAMES: u64 = 30;
 
 /// Tracks every detected bbox + when it expires.
 ///

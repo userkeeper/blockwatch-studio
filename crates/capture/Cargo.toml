@@ -18,5 +18,16 @@ tracing = { workspace = true }
 # `xcap::Monitor` and translate its frame into our `Frame` type.
 xcap = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+# Win32 APIs for foreground-window inspection. We bind only what
+# `window_info::windows.rs` needs — GetForegroundWindow, GetWindowText,
+# GetWindowRect, GetWindowThreadProcessId.
+windows = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+    "Win32_System_ProcessStatus",
+] }
+
 [lints]
 workspace = true
