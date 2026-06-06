@@ -6,6 +6,7 @@ members = [
     "crates/ocr",
     "crates/virtualcam",
     "crates/cli",
+    "crates/vision",
     # "crates/app-tauri",   # enabled when Tauri scaffold lands in Phase 3
 ]
 
