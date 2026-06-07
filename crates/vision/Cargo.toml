@@ -14,16 +14,15 @@ bw-capture = { path = "../capture" }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
-# ONNX Runtime (`ort`) is intentionally NOT a dependency at Phase 0.
-# Reason: `ort` 2.0.0-rc.x is currently in an unstable rc-series with
-# version-mismatch bugs against `ort-sys` rc.12 (`SessionOptionsAppend-
-# ExecutionProvider_VitisAI` field missing). We will add `ort` back as
-# a dep in Phase 1 once we either pin to a known-good rc pair or wait
-# for the 2.0 stable release. Until then, the vision crate compiles
-# cleanly without it — the inference path is stubbed.
-#
-# ort = { version = "2.0.0-rc.10", default-features = false, features = ["copy-dylibs", "load-dynamic"] }
-# ndarray = "0.16"
+# Tract — pure-Rust ONNX inference. Picked over `ort` (which had
+# version-mismatch bugs against `ort-sys` rc.12 at the time we evaluated)
+# because tract has zero native dependencies — no DLL bundling, no
+# install-time gymnastics, just `cargo build` and it works. About 2×
+# slower than ORT's CPU provider in benchmarks, which is irrelevant
+# next to our 10 fps budget: a 40 ms YOLOv8n inference becomes 80 ms,
+# still well inside the per-frame envelope.
+tract-onnx = "0.21"
+ndarray = "0.16"
 
 image = { workspace = true }
 
